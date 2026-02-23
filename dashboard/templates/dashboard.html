@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Flood Monitoring Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f172a; color: #e2e8f0; min-height: 100vh; }
+  header { background: #1e293b; padding: 1.5rem 2rem; border-bottom: 1px solid #334155; display: flex; align-items: center; gap: 1rem; }
+  header h1 { font-size: 1.5rem; color: #38bdf8; }
+  header span { font-size: 0.85rem; color: #94a3b8; }
+  .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 1.5rem; margin-bottom: 2rem; }
+  .card { background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; }
+  .card h3 { color: #94a3b8; font-size: 0.85rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 0.5rem; }
+  .level { font-size: 2.5rem; font-weight: 700; }
+  .badge { display: inline-block; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.8rem; font-weight: 600; margin-top: 0.5rem; }
+  .safe { color: #4ade80; } .badge.safe { background: #14532d; color: #4ade80; }
+  .warning { color: #facc15; } .badge.warning { background: #713f12; color: #facc15; }
+  .high_risk { color: #f97316; } .badge.high_risk { background: #7c2d12; color: #f97316; }
+  .critical { color: #f87171; } .badge.critical { background: #7f1d1d; color: #f87171; }
+  .chart-card { background: #1e293b; border-radius: 12px; padding: 1.5rem; border: 1px solid #334155; margin-bottom: 2rem; }
+  .chart-card h2 { margin-bottom: 1rem; font-size: 1rem; color: #cbd5e1; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 0.75rem; border-bottom: 1px solid #334155; color: #64748b; font-size: 0.8rem; text-transform: uppercase; }
+  td { padding: 0.75rem; border-bottom: 1px solid #1e293b; font-size: 0.9rem; }
+  tr:hover td { background: #1e293b; }
+  .refresh { font-size: 0.75rem; color: #64748b; }
+  select { background: #334155; color: #e2e8f0; border: 1px solid #475569; padding: 0.4rem 0.8rem; border-radius: 6px; margin-bottom: 1rem; cursor: pointer; }
+</style>
+</head>
+<body>
+<header>
+  <div>💧</div>
+  <h1>Flood Monitoring Dashboard</h1>
+  <span id="last-updated" class="refresh">Updating...</span>
+</header>
+<div class="container">
+  <div style="margin-bottom:1rem;">
+    <select id="device-select" onchange="switchDevice(this.value)">
+      {% for d in devices %}
+      <option value="{{ d.id }}">{{ d.name }} — {{ d.location }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="grid" id="stat-cards">
+    <div class="card">
+      <h3>Current Water Level</h3>
+      <div class="level" id="water-level">—</div>
+      <div>cm</div>
+    </div>
+    <div class="card">
+      <h3>Risk Level</h3>
+      <div id="risk-badge">—</div>
+    </div>
+    <div class="card">
+      <h3>Last Reading</h3>
+      <div id="last-reading">—</div>
+    </div>
+    <div class="card">
+      <h3>Open Incidents</h3>
+      <div class="level" id="open-incidents">—</div>
+    </div>
+  </div>
+
+  <div class="chart-card">
+    <h2>📈 Water Level — Last 24 Hours</h2>
+    <canvas id="levelChart" height="80"></canvas>
+  </div>
+
+  <div class="card">
+    <h2 style="margin-bottom:1rem; font-size:1rem; color:#cbd5e1;">🚨 Recent Incidents</h2>
+    <table>
+      <thead><tr><th>Device</th><th>Risk</th><th>Triggered</th><th>Status</th></tr></thead>
+      <tbody id="incidents-table"><tr><td colspan="4" style="color:#64748b;">Loading...</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+let chart;
+let currentDevice = document.getElementById('device-select')?.value;
+
+function switchDevice(id) { currentDevice = id; fetchAll(); }
+
+function riskClass(r) { return r?.toLowerCase().replace(' ', '_') || 'safe'; }
+function riskLabel(r) { return r?.replace('_', ' ').toUpperCase() || 'UNKNOWN'; }
+
+async function fetchAll() {
+  try {
+    const [latestRes, readingsRes] = await Promise.all([
+      fetch(`/readings/latest/${currentDevice}`),
+      fetch(`/readings/?device_id=${currentDevice}&limit=48`)
+    ]);
+    if (latestRes.ok) {
+      const d = await latestRes.json();
+      document.getElementById('water-level').textContent = d.water_level.toFixed(1);
+      const rc = riskClass(d.risk_level);
+      document.getElementById('risk-badge').innerHTML = `<span class="badge ${rc}">${riskLabel(d.risk_level)}</span>`;
+      document.getElementById('last-reading').textContent = new Date(d.timestamp + 'Z').toLocaleString();
+    }
+    if (readingsRes.ok) {
+      const readings = (await readingsRes.json()).reverse();
+      updateChart(readings);
+    }
+    document.getElementById('last-updated').textContent = 'Updated: ' + new Date().toLocaleTimeString();
+  } catch(e) { console.error(e); }
+
+  // Incidents (public endpoint doesn't need auth — we just show count)
+}
+
+function updateChart(readings) {
+  const labels = readings.map(r => new Date(r.timestamp + 'Z').toLocaleTimeString());
+  const data = readings.map(r => r.water_level);
+  if (chart) {
+    chart.data.labels = labels;
+    chart.data.datasets[0].data = data;
+    chart.update();
+    return;
+  }
+  chart = new Chart(document.getElementById('levelChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Water Level (cm)',
+        data,
+        borderColor: '#38bdf8',
+        backgroundColor: 'rgba(56,189,248,0.1)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 2,
+      }]
+    },
+    options: {
+      plugins: { legend: { labels: { color: '#94a3b8' } } },
+      scales: {
+        x: { ticks: { color: '#64748b', maxTicksLimit: 8 }, grid: { color: '#1e293b' } },
+        y: { ticks: { color: '#64748b' }, grid: { color: '#334155' },
+             title: { display: true, text: 'cm', color: '#64748b' } }
+      }
+    }
+  });
+}
+
+fetchAll();
+setInterval(fetchAll, 10000); // refresh every 10 seconds
+</script>
+</body>
+</html>
